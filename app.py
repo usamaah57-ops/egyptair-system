@@ -95,7 +95,7 @@ def load_archive():
     return rows
 
 
-# --- PDF Generator ---
+# --- FIXED PDF Generator ---
 def generate_pdf(flight, reg, date, records):
     pdf = FPDF()
     pdf.add_page()
@@ -121,8 +121,9 @@ def generate_pdf(flight, reg, date, records):
         pdf.cell(40, 8, r[4], border=1)
         pdf.cell(80, 8, r[5], border=1, ln=True)
 
-    buffer = BytesIO()
-    pdf.output(buffer)
+    # --- FIX: Correct PDF output for Streamlit ---
+    pdf_bytes = pdf.output(dest='S').encode('latin-1')
+    buffer = BytesIO(pdf_bytes)
     buffer.seek(0)
     return buffer
 
