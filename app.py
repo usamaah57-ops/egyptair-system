@@ -1,7 +1,6 @@
 import streamlit as st
 import sqlite3
 from datetime import datetime
-from fpdf import FPDF
 
 DB_FILE = "flight_data.db"
 
@@ -9,6 +8,7 @@ DB_FILE = "flight_data.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+
     # Current services table
     c.execute("""
         CREATE TABLE IF NOT EXISTS services (
@@ -17,6 +17,7 @@ def init_db():
             staff TEXT
         )
     """)
+
     # Archive table
     c.execute("""
         CREATE TABLE IF NOT EXISTS archive (
@@ -28,8 +29,10 @@ def init_db():
             staff TEXT
         )
     """)
+
     conn.commit()
     conn.close()
+
 
 def save_service(key, time, staff):
     conn = sqlite3.connect(DB_FILE)
@@ -37,6 +40,7 @@ def save_service(key, time, staff):
     c.execute("INSERT OR REPLACE INTO services (key, time, staff) VALUES (?, ?, ?)", (key, time, staff))
     conn.commit()
     conn.close()
+
 
 def load_services():
     conn = sqlite3.connect(DB_FILE)
@@ -46,12 +50,14 @@ def load_services():
     conn.close()
     return {r[0]: {"time": r[1], "staff": r[2]} for r in rows}
 
+
 def clear_services():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM services")
     conn.commit()
     conn.close()
+
 
 # --- Archive with duplicate prevention ---
 def archive_services(flight, reg):
@@ -72,8 +78,10 @@ def archive_services(flight, reg):
     for k, v in services.items():
         c.execute("INSERT INTO archive (flight, reg, date, key, time, staff) VALUES (?, ?, ?, ?, ?, ?)",
                   (flight, reg, date, k, v['time'], v['staff']))
+
     conn.commit()
     conn.close()
+
 
 def load_archive():
     conn = sqlite3.connect(DB_FILE)
@@ -83,13 +91,26 @@ def load_archive():
     conn.close()
     return rows
 
+
+# --- Initialize DB ---
 init_db()
+
+# --- Page Settings ---
+st.set_page_config(page_title="Baghdad Station Operations", page_icon="✈️", layout="centered")
+
+# --- Header Image (from URL instead of file) ---
+st.image(
+    "https://i.imgur.com/2JYQFZC.jpeg",
+    caption="EgyptAir – Baghdad Station Operations",
+    use_column_width=True
+)
 
 st.title("✈️ Baghdad Station Operations")
 
 # --- Staff Login ---
 if 'staff_confirmed' not in st.session_state:
     st.session_state.staff_confirmed = False
+
 if 'current_staff' not in st.session_state:
     st.session_state.current_staff = ""
 
@@ -106,6 +127,7 @@ if not st.session_state.staff_confirmed:
 
 st.write(f"👷 Current Staff: **{st.session_state.current_staff}**")
 
+# --- Flight Inputs ---
 flight = st.text_input("Flight Number", value="MS616").upper()
 reg = st.text_input("Registration (Reg)", value="SU-").upper()
 
@@ -126,6 +148,7 @@ services_labels = [
 
 current_shared_times = load_services()
 cols = st.columns(2)
+
 for i, (label, key) in enumerate(services_labels):
     if key in current_shared_times:
         recorded = current_shared_times[key]
@@ -152,9 +175,11 @@ if st.button("📧 Send Final Report and Archive Data", type="primary", use_cont
 # --- Archive Viewer ---
 st.divider()
 st.subheader("📂 Archived Reports")
+
 archive = load_archive()
+
 if archive:
-    for row in archive[:20]:  # Show last 20 records
+    for row in archive[:20]:
         st.write(f"Flight {row[0]} | Reg {row[1]} | Date {row[2]} | {row[3]} at {row[4]} by {row[5]}")
 else:
     st.info("No archived reports yet.")
