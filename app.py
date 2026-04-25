@@ -1,196 +1,160 @@
 import streamlit as st
-import pandas as pd
+import sqlite3
 from datetime import datetime
-import pytz
 from fpdf import FPDF
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-import os
-import json
-import glob
 
-# محاولة استيراد مكتبة التحديث التلقائي
-try:
-    from streamlit_autorefresh import st_autorefresh
-except ImportError:
-    st_autorefresh = None
+DB_FILE = "flight_data.db"
 
-# --- 1. إعدادات المنطقة والوقت ---
-BAGHDAD_TZ = pytz.timezone('Asia/Baghdad')
+# --- Initialize Database ---
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    # Current services table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS services (
+            key TEXT PRIMARY KEY,
+            time TEXT,
+            staff TEXT
+        )
+    """)
+    # Archive table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS archive (
+            flight TEXT,
+            reg TEXT,
+            date TEXT,
+            key TEXT,
+            time TEXT,
+            staff TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# --- 2. إعدادات المجلدات والإيميل ---
-EMAIL_SENDER = "usama_ghh@yahoo.com"
-EMAIL_PASSWORD = "dvfsxhdlzhcrqpys" 
-EMAIL_RECEIVER = "Baghdad_kk@egyptair.com"
-DATA_DIR = "flights_data"
-ARCHIVE_DIR = "pdf_archive"
+def save_service(key, time, staff):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO services (key, time, staff) VALUES (?, ?, ?)", (key, time, staff))
+    conn.commit()
+    conn.close()
 
-for folder in [DATA_DIR, ARCHIVE_DIR]:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+def load_services():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT key, time, staff FROM services")
+    rows = c.fetchall()
+    conn.close()
+    return {r[0]: {"time": r[1], "staff": r[2]} for r in rows}
 
-st.set_page_config(page_title="MS Baghdad Ops", page_icon="✈️", layout="centered")
+def clear_services():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM services")
+    conn.commit()
+    conn.close()
 
-# تشغيل التحديث التلقائي كل 10 ثوانٍ إذا كانت المكتبة مثبتة
-if st_autorefresh:
-    st_autorefresh(interval=10000, key="data_refresh")
+# --- Archive with duplicate prevention ---
+def archive_services(flight, reg):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    date = datetime.now().strftime("%d/%m/%Y")
 
-# --- 3. عرض الشعار ---
-image_path = "egyptair_plane.jpg"
-if os.path.exists(image_path):
-    st.image(image_path, use_container_width=True)
+    # Check if flight already archived with same number, reg, and date
+    c.execute("SELECT COUNT(*) FROM archive WHERE flight=? AND reg=? AND date=?", (flight, reg, date))
+    exists = c.fetchone()[0]
 
-# --- 4. وظائف البيانات ---
-def save_flight_data(flight_id, data):
-    with open(os.path.join(DATA_DIR, f"{flight_id}.json"), "w") as f:
-        json.dump(data, f)
+    if exists > 0:
+        st.warning(f"⚠️ Flight {flight} ({reg}) already archived for {date}.")
+        conn.close()
+        return
 
-def load_flight_data(flight_id):
-    path = os.path.join(DATA_DIR, f"{flight_id}.json")
-    if os.path.exists(path):
-        try:
-            with open(path, "r") as f: return json.load(f)
-        except: return None
-    return None
+    services = load_services()
+    for k, v in services.items():
+        c.execute("INSERT INTO archive (flight, reg, date, key, time, staff) VALUES (?, ?, ?, ?, ?, ?)",
+                  (flight, reg, date, k, v['time'], v['staff']))
+    conn.commit()
+    conn.close()
 
-def get_active_flights():
-    files = glob.glob(os.path.join(DATA_DIR, "*.json"))
-    return [os.path.basename(f).replace(".json", "") for f in files]
+def load_archive():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT flight, reg, date, key, time, staff FROM archive ORDER BY date DESC")
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
-# --- 5. تسجيل الدخول ---
+init_db()
+
+st.title("✈️ Baghdad Station Operations")
+
+# --- Staff Login ---
+if 'staff_confirmed' not in st.session_state:
+    st.session_state.staff_confirmed = False
 if 'current_staff' not in st.session_state:
     st.session_state.current_staff = ""
 
-if not st.session_state.current_staff:
-    st.subheader("👤 تسجيل دخول الموظف")
-    name_input = st.text_input("أدخل اسمك الكامل:")
-    if st.button("دخول"):
-        if name_input:
-            st.session_state.current_staff = name_input
+if not st.session_state.staff_confirmed:
+    name_input = st.text_input("Enter your full name:")
+    if st.button("Confirm and Enter"):
+        if name_input.strip():
+            st.session_state.current_staff = name_input.strip()
+            st.session_state.staff_confirmed = True
             st.rerun()
+        else:
+            st.error("Please enter your name to continue.")
     st.stop()
 
-# --- 6. القائمة الجانبية ---
-st.sidebar.title(f"👷 {st.session_state.current_staff}")
-active_flights = get_active_flights()
-menu = st.sidebar.radio("القائمة:", ["الرحلات النشطة", "فتح رحلة جديدة"])
+st.write(f"👷 Current Staff: **{st.session_state.current_staff}**")
 
-if menu == "فتح رحلة جديدة":
-    f_no = st.text_input("رقم الرحلة:").upper().strip()
-    f_reg = st.text_input("التسجيل:").upper().strip()
-    if st.button("بدء الرحلة"):
-        if f_no and f_reg:
-            today = datetime.now(BAGHDAD_TZ).strftime('%d-%m-%Y')
-            f_id = f"{f_no}_{f_reg}_{today}"
-            if any(f_id in f for f in active_flights):
-                st.warning("⚠️ الرحلة مفتوحة بالفعل.")
-            else:
-                save_flight_data(f_id, {"flight_no": f_no, "reg": f_reg, "date": today, "times": {}})
-                st.session_state.active_id = f_id
-                st.rerun()
-else:
-    if active_flights:
-        st.session_state.active_id = st.sidebar.selectbox("اختر رحلة:", sorted(active_flights, reverse=True))
-        if st.sidebar.button("🗑️ حذف الرحلة"):
-            os.remove(os.path.join(DATA_DIR, f"{st.session_state.active_id}.json"))
+flight = st.text_input("Flight Number", value="MS616").upper()
+reg = st.text_input("Registration (Reg)", value="SU-").upper()
+
+st.divider()
+
+# --- Services ---
+services_labels = [
+    ("⏱ Chocks ON", "CHOCKS_ON"), ("⚡ GPU Arrival", "GPU_ARRIVAL"),
+    ("🔌 APU Start", "APU_START"), ("🛠 Air Starter", "AIR_STARTER"),
+    ("📦 FWD Open", "FWD_OPEN"), ("📦 FWD Close", "FWD_CLOSE"),
+    ("📦 AFT Open", "AFT_OPEN"), ("📦 AFT Close", "AFT_CLOSE"),
+    ("🚛 Fuel Arrival", "FUEL_ARRIVAL"), ("⛽ Fuel End", "FUEL_END"),
+    ("🧹 Cleaning START", "CLEANING_START"), ("✨ Cleaning END", "CLEANING_END"),
+    ("🚶 First Pax", "FIRST_PAX"), ("🏁 Last Pax", "LAST_PAX"),
+    ("📑 Loadsheet", "LOADSHEET"), ("🚪 Close Door", "CLOSE_DOOR"),
+    ("🚜 Pushback Truck", "PUSHBACK_TRUCK"), ("🚀 Push Back", "PUSH_BACK")
+]
+
+current_shared_times = load_services()
+cols = st.columns(2)
+for i, (label, key) in enumerate(services_labels):
+    if key in current_shared_times:
+        recorded = current_shared_times[key]
+        cols[i % 2].success(f"{label}\n{recorded['time']} ({recorded['staff']})")
+    else:
+        if cols[i % 2].button(label, key=key, use_container_width=True):
+            now_t = datetime.now().strftime("%H:%M")
+            save_service(key, now_t, st.session_state.current_staff)
             st.rerun()
 
-# --- 7. الأرشيف ---
-st.sidebar.divider()
-st.sidebar.subheader("📂 أرشيف التقارير")
-archived_files = sorted(glob.glob(os.path.join(ARCHIVE_DIR, "*.pdf")), reverse=True)
-for pdf_path in archived_files[:5]:
-    file_name = os.path.basename(pdf_path)
-    col_d, col_x = st.sidebar.columns([4, 1])
-    with open(pdf_path, "rb") as f:
-        col_d.download_button(label=f"📄 {file_name[:10]}", data=f, file_name=file_name, key=f"dl_{file_name}")
-    if col_x.button("❌", key=f"del_{file_name}"):
-        os.remove(pdf_path)
+st.divider()
+
+# --- Final Report Button ---
+if st.button("📧 Send Final Report and Archive Data", type="primary", use_container_width=True):
+    if not current_shared_times:
+        st.warning("⚠️ No data available!")
+    else:
+        archive_services(flight, reg)
+        clear_services()
+        st.success("✅ Report archived successfully.")
+        st.balloons()
         st.rerun()
 
-# --- 8. واجهة العمل ---
-if 'active_id' in st.session_state and st.session_state.active_id in get_active_flights():
-    data = load_flight_data(st.session_state.active_id)
-    if data:
-        st.header(f"✈️ {data.get('flight_no')} | {data.get('reg')}")
-        st.caption(f"📅 التاريخ: {data.get('date')} | 🔄 التحديث تلقائي")
-        
-        services = [
-            ("⏱ Chocks ON", "CHOCKS_ON"), ("⚡ GPU Arrival", "GPU_ARRIVAL"),
-            ("🔌 APU Start", "APU_START"), ("💨 Air Starter", "AIR_STARTER"),
-            ("📦 FWD Open", "FWD_OPEN"), ("🔒 FWD Close", "FWD_CLOSE"),
-            ("📦 AFT Open", "AFT_OPEN"), ("🔒 AFT Close", "AFT_CLOSE"),
-            ("🚛 Fuel Arrival", "FUEL_ARRIVAL"), ("⛽ Fuel End", "FUEL_END"),
-            ("🧹 Cleaning START", "CLEANING_START"), ("✨ Cleaning END", "CLEANING_END"),
-            ("🚶 First Pax", "FIRST_PAX"), ("🏁 Last Pax", "LAST_PAX"),
-            ("📄 Loadsheet", "LOADSHEET"), ("🚪 Close Door", "CLOSE_DOOR"),
-            ("🚜 Pushback Truck", "PUSHBACK_TRUCK"), ("🚀 Push Back", "PUSH_BACK")
-        ]
-
-        cols = st.columns(2)
-        for i, (label, key) in enumerate(services):
-            current_times = data.get('times', {})
-            if key in current_times:
-                rec = current_times[key]
-                cols[i % 2].success(f"✅ {label}\n{rec['time']} - {rec['staff']}")
-            else:
-                if cols[i % 2].button(label, key=f"btn_{st.session_state.active_id}_{key}", use_container_width=True):
-                    # تحديث البيانات للتأكد من عدم التكرار
-                    fresh_data = load_flight_data(st.session_state.active_id)
-                    if fresh_data and key not in fresh_data.get('times', {}):
-                        if 'times' not in fresh_data: fresh_data['times'] = {}
-                        fresh_data['times'][key] = {"time": datetime.now(BAGHDAD_TZ).strftime("%H:%M"), "staff": st.session_state.current_staff}
-                        save_flight_data(st.session_state.active_id, fresh_data)
-                        st.rerun()
-
-        st.divider()
-        
-        def generate_pdf_final(f_data):
-            pdf = FPDF()
-            pdf.add_page()
-            if os.path.exists(image_path): pdf.image(image_path, x=10, y=10, w=190); pdf.ln(80)
-            pdf.set_font("Arial", 'B', 16)
-            pdf.cell(0, 10, "Station Operations Report", 0, 1, 'C')
-            pdf.ln(5)
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(63, 10, f"Flight: {f_data.get('flight_no')}", 1, 0, 'C')
-            pdf.cell(63, 10, f"Reg: {f_data.get('reg')}", 1, 0, 'C')
-            pdf.cell(64, 10, f"Date: {f_data.get('date')}", 1, 1, 'C')
-            pdf.ln(10)
-            for s_key in sorted(f_data.get('times', {}).keys()):
-                val = f_data['times'][s_key]
-                pdf.cell(80, 10, s_key.replace("_", " "), 1)
-                pdf.cell(40, 10, val['time'], 1, 0, 'C')
-                pdf.cell(70, 10, val['staff'], 1, 1, 'C')
-            return pdf
-
-        c1, c2 = st.columns(2)
-        if c1.button("📧 إرسال الإيميل", use_container_width=True):
-            try:
-                pdf = generate_pdf_final(data)
-                pdf_name = f"Report_{data['flight_no']}.pdf"
-                pdf.output(pdf_name)
-                msg = MIMEMultipart()
-                msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_RECEIVER
-                msg['Subject'] = f"Ops Report: {data['flight_no']} | {data['date']}"
-                with open(pdf_name, "rb") as f:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(f.read()); encoders.encode_base64(part)
-                    part.add_header("Content-Disposition", f"attachment; filename={pdf_name}")
-                    msg.attach(part)
-                server = smtplib.SMTP_SSL('smtp.mail.yahoo.com', 465)
-                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                server.send_message(msg); server.quit()
-                os.remove(pdf_name)
-                st.success("✅ تم الإرسال.")
-            except Exception as e: st.error(f"❌ فشل الإرسال: {e}")
-
-        if c2.button("📂 أرشفة وإنهاء", type="primary", use_container_width=True):
-            pdf = generate_pdf_final(data)
-            pdf.output(os.path.join(ARCHIVE_DIR, f"Report_{st.session_state.active_id}.pdf"))
-            os.remove(os.path.join(DATA_DIR, f"{st.session_state.active_id}.json"))
-            st.success("✅ تمت الأرشفة.")
-            st.balloons()
-            st.rerun()
+# --- Archive Viewer ---
+st.divider()
+st.subheader("📂 Archived Reports")
+archive = load_archive()
+if archive:
+    for row in archive[:20]:  # Show last 20 records
+        st.write(f"Flight {row[0]} | Reg {row[1]} | Date {row[2]} | {row[3]} at {row[4]} by {row[5]}")
+else:
+    st.info("No archived reports yet.")
