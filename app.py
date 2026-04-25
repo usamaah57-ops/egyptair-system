@@ -69,10 +69,11 @@ if option == "فتح رحلة جديدة":
     if st.button("بدء تسجيل الرحلة"):
         if new_f and new_r:
             today_str = datetime.now(BAGHDAD_TZ).strftime('%d-%m-%Y')
+            # معرف فريد يشمل رقم الرحلة والتسجيل والتاريخ
             f_id = f"{new_f}_{new_r}_{today_str}"
             
             if f_id in active_flights:
-                st.error(f"⚠️ الرحلة {new_f} مسجلة بالفعل اليوم. اخترها من القائمة الجانبية.")
+                st.error(f"⚠️ الرحلة {new_f} مسجلة بالفعل اليوم.")
             else:
                 save_flight_data(f_id, {
                     "flight_no": new_f, 
@@ -89,13 +90,12 @@ else:
         selected = st.sidebar.selectbox("اختر الرحلة للمتابعة:", active_flights)
         st.session_state.active_id = selected
         
-        # --- إضافة زر المسح نهائياً ---
         st.sidebar.divider()
         if st.sidebar.button("🗑️ مسح هذه الرحلة من القائمة"):
             file_to_del = os.path.join(DATA_DIR, f"{st.session_state.active_id}.json")
             if os.path.exists(file_to_del):
                 os.remove(file_to_del)
-                st.sidebar.success("تم مسح الملف بنجاح.")
+                st.sidebar.success("تم المسح.")
                 st.rerun()
     else:
         st.info("لا توجد رحلات نشطة حالياً.")
@@ -109,6 +109,7 @@ if 'active_id' in st.session_state:
         flight_date = data.get('date', datetime.now(BAGHDAD_TZ).strftime('%d-%m-%Y'))
         st.info(f"📅 تاريخ الرحلة: {flight_date}")
         
+        # قائمة الخدمات (تم تصحيح الأقواس وعلامات الاقتباس)
         services = [
             ("⏱ Chocks ON", "CHOCKS_ON"), ("⚡ GPU Arrival", "GPU_ARRIVAL"),
             ("🔌 APU Start", "APU_START"), ("💨 Air Starter", "AIR_STARTER"),
@@ -116,4 +117,81 @@ if 'active_id' in st.session_state:
             ("📦 AFT Open", "AFT_OPEN"), ("🔒 AFT Close", "AFT_CLOSE"),
             ("🚛 Fuel Arrival", "FUEL_ARRIVAL"), ("⛽ Fuel End", "FUEL_END"),
             ("🧹 Cleaning START", "CLEANING_START"), ("✨ Cleaning END", "CLEANING_END"),
-            ("🚶 First Pax", "FIRST_PAX"), ("
+            ("🚶 First Pax", "FIRST_PAX"), ("🏁 Last Pax", "LAST_PAX"),
+            ("📄 Loadsheet", "LOADSHEET"), ("🚪 Close Door", "CLOSE_DOOR"),
+            ("🚜 Pushback Truck", "PUSHBACK_TRUCK"), ("🚀 Push Back", "PUSH_BACK")
+        ]
+
+        cols = st.columns(2)
+        for i, (label, key) in enumerate(services):
+            if key in data['times']:
+                rec = data['times'][key]
+                cols[i % 2].success(f"{label}\n{rec['time']} ({rec['staff']})")
+            else:
+                if cols[i % 2].button(label, key=f"{st.session_state.active_id}_{key}", use_container_width=True):
+                    now_baghdad = datetime.now(BAGHDAD_TZ).strftime("%H:%M")
+                    data['times'][key] = {"time": now_baghdad, "staff": st.session_state.current_staff}
+                    save_flight_data(st.session_state.active_id, data)
+                    st.rerun()
+
+        st.divider()
+        
+        # --- 8. إرسال التقرير النهائي ---
+        if st.button("📧 إرسال التقرير النهائي للمحطة", type="primary", use_container_width=True):
+            try:
+                pdf = FPDF()
+                pdf.add_page()
+                if os.path.exists("egyptair_plane.jpg"):
+                    pdf.image("egyptair_plane.jpg", x=10, y=10, w=190)
+                    pdf.ln(80)
+                
+                pdf.set_font("Arial", 'B', 16)
+                pdf.cell(0, 10, "Station Operations Report", 0, 1, 'C')
+                pdf.ln(5)
+                
+                pdf.set_font("Arial", 'B', 12)
+                pdf.cell(63, 10, f"Flight: {data.get('flight_no')}", 1, 0, 'C')
+                pdf.cell(63, 10, f"Reg: {data.get('reg')}", 1, 0, 'C')
+                pdf.cell(64, 10, f"Date: {flight_date}", 1, 1, 'C')
+                pdf.ln(10)
+                
+                pdf.set_fill_color(200, 220, 255)
+                pdf.cell(80, 10, "Service", 1, 0, 'C', True)
+                pdf.cell(40, 10, "Time (LT)", 1, 0, 'C', True)
+                pdf.cell(70, 10, "Staff", 1, 1, 'C', True)
+                
+                pdf.set_font("Arial", size=10)
+                for s_key in sorted(data['times'].keys()):
+                    val = data['times'][s_key]
+                    pdf.cell(80, 10, s_key.replace("_", " "), 1)
+                    pdf.cell(40, 10, val['time'], 1, 0, 'C')
+                    pdf.cell(70, 10, val['staff'], 1, 1, 'C')
+
+                pdf_name = f"Report_{st.session_state.active_id}.pdf"
+                pdf.output(pdf_name)
+                
+                msg = MIMEMultipart()
+                msg['From'] = EMAIL_SENDER
+                msg['To'] = EMAIL_RECEIVER
+                msg['Subject'] = f"Ops Report: {data.get('flight_no')} | {data.get('reg')} | {flight_date}"
+                with open(pdf_name, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", f"attachment; filename={pdf_name}")
+                    msg.attach(part)
+                
+                server = smtplib.SMTP_SSL('smtp.mail.yahoo.com', 465)
+                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                server.send_message(msg)
+                server.quit()
+
+                # حذف ملف البيانات بعد الإرسال بنجاح
+                os.remove(os.path.join(DATA_DIR, f"{st.session_state.active_id}.json"))
+                if os.path.exists(pdf_name): os.remove(pdf_name)
+                
+                st.success("✅ تم الإرسال وتصفير البيانات.")
+                st.balloons()
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ خطأ: {e}")
