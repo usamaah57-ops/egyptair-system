@@ -10,7 +10,12 @@ from email import encoders
 import os
 import json
 import glob
-from streamlit_autorefresh import st_autorefresh # يتطلب تثبيت streamlit-autorefresh
+
+# محاولة استيراد مكتبة التحديث التلقائي
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
 
 # --- 1. إعدادات المنطقة والوقت ---
 BAGHDAD_TZ = pytz.timezone('Asia/Baghdad')
@@ -28,22 +33,18 @@ for folder in [DATA_DIR, ARCHIVE_DIR]:
 
 st.set_page_config(page_title="MS Baghdad Ops", page_icon="✈️", layout="centered")
 
-# --- ميزة التحديث التلقائي كل 10 ثوانٍ لمزامنة الفريق ---
-# ملاحظة: إذا لم تكن المكتبة مثبتة، سيعمل الكود بشكل طبيعي بدون تحديث تلقائي
-try:
+# تشغيل التحديث التلقائي كل 10 ثوانٍ إذا كانت المكتبة مثبتة
+if st_autorefresh:
     st_autorefresh(interval=10000, key="data_refresh")
-except:
-    pass
 
 # --- 3. عرض الشعار ---
 image_path = "egyptair_plane.jpg"
 if os.path.exists(image_path):
     st.image(image_path, use_container_width=True)
 
-# --- 4. وظائف إدارة البيانات ---
+# --- 4. وظائف البيانات ---
 def save_flight_data(flight_id, data):
-    path = os.path.join(DATA_DIR, f"{flight_id}.json")
-    with open(path, "w") as f:
+    with open(os.path.join(DATA_DIR, f"{flight_id}.json"), "w") as f:
         json.dump(data, f)
 
 def load_flight_data(flight_id):
@@ -58,12 +59,12 @@ def get_active_flights():
     files = glob.glob(os.path.join(DATA_DIR, "*.json"))
     return [os.path.basename(f).replace(".json", "") for f in files]
 
-# --- 5. تسجيل دخول الموظف ---
+# --- 5. تسجيل الدخول ---
 if 'current_staff' not in st.session_state:
     st.session_state.current_staff = ""
 
 if not st.session_state.current_staff:
-    st.subheader("👤 تسجيل دخول الموظف للمناوبة")
+    st.subheader("👤 تسجيل دخول الموظف")
     name_input = st.text_input("أدخل اسمك الكامل:")
     if st.button("دخول"):
         if name_input:
@@ -71,7 +72,7 @@ if not st.session_state.current_staff:
             st.rerun()
     st.stop()
 
-# --- 6. القائمة الجانبية (Sidebar) ---
+# --- 6. القائمة الجانبية ---
 st.sidebar.title(f"👷 {st.session_state.current_staff}")
 active_flights = get_active_flights()
 menu = st.sidebar.radio("القائمة:", ["الرحلات النشطة", "فتح رحلة جديدة"])
@@ -84,7 +85,7 @@ if menu == "فتح رحلة جديدة":
             today = datetime.now(BAGHDAD_TZ).strftime('%d-%m-%Y')
             f_id = f"{f_no}_{f_reg}_{today}"
             if any(f_id in f for f in active_flights):
-                st.warning("⚠️ هذه الرحلة مفتوحة بالفعل.")
+                st.warning("⚠️ الرحلة مفتوحة بالفعل.")
             else:
                 save_flight_data(f_id, {"flight_no": f_no, "reg": f_reg, "date": today, "times": {}})
                 st.session_state.active_id = f_id
@@ -96,25 +97,25 @@ else:
             os.remove(os.path.join(DATA_DIR, f"{st.session_state.active_id}.json"))
             st.rerun()
 
-# --- 7. أرشيف الـ PDF مع ميزة الحذف ---
+# --- 7. الأرشيف ---
 st.sidebar.divider()
-st.sidebar.subheader("📂 الأرشيف")
+st.sidebar.subheader("📂 أرشيف التقارير")
 archived_files = sorted(glob.glob(os.path.join(ARCHIVE_DIR, "*.pdf")), reverse=True)
 for pdf_path in archived_files[:5]:
     file_name = os.path.basename(pdf_path)
-    col_down, col_del = st.sidebar.columns([4, 1])
+    col_d, col_x = st.sidebar.columns([4, 1])
     with open(pdf_path, "rb") as f:
-        col_down.download_button(label=f"📄 {file_name[:10]}", data=f, file_name=file_name, key=f"dl_{file_name}")
-    if col_del.button("❌", key=f"del_{file_name}"):
+        col_d.download_button(label=f"📄 {file_name[:10]}", data=f, file_name=file_name, key=f"dl_{file_name}")
+    if col_x.button("❌", key=f"del_{file_name}"):
         os.remove(pdf_path)
         st.rerun()
 
-# --- 8. واجهة العمل (مزامنة فورية + قفل الأزرار) ---
+# --- 8. واجهة العمل ---
 if 'active_id' in st.session_state and st.session_state.active_id in get_active_flights():
     data = load_flight_data(st.session_state.active_id)
     if data:
         st.header(f"✈️ {data.get('flight_no')} | {data.get('reg')}")
-        st.caption(f"📅 التاريخ: {data.get('date')} | 🔄 التحديث: تلقائي كل 10ث")
+        st.caption(f"📅 التاريخ: {data.get('date')} | 🔄 التحديث تلقائي")
         
         services = [
             ("⏱ Chocks ON", "CHOCKS_ON"), ("⚡ GPU Arrival", "GPU_ARRIVAL"),
@@ -136,28 +137,30 @@ if 'active_id' in st.session_state and st.session_state.active_id in get_active_
                 cols[i % 2].success(f"✅ {label}\n{rec['time']} - {rec['staff']}")
             else:
                 if cols[i % 2].button(label, key=f"btn_{st.session_state.active_id}_{key}", use_container_width=True):
-                    # إعادة قراءة الملف قبل الحفظ للتأكد من عدم قيام زميل آخر بالتسجيل في نفس الثانية
+                    # تحديث البيانات للتأكد من عدم التكرار
                     fresh_data = load_flight_data(st.session_state.active_id)
                     if fresh_data and key not in fresh_data.get('times', {}):
                         if 'times' not in fresh_data: fresh_data['times'] = {}
-                        fresh_data['times'][key] = {
-                            "time": datetime.now(BAGHDAD_TZ).strftime("%H:%M"),
-                            "staff": st.session_state.current_staff
-                        }
+                        fresh_data['times'][key] = {"time": datetime.now(BAGHDAD_TZ).strftime("%H:%M"), "staff": st.session_state.current_staff}
                         save_flight_data(st.session_state.active_id, fresh_data)
                         st.rerun()
 
         st.divider()
         
-        # --- 9. التقارير ---
-        def generate_pdf(f_data):
+        def generate_pdf_final(f_data):
             pdf = FPDF()
             pdf.add_page()
             if os.path.exists(image_path): pdf.image(image_path, x=10, y=10, w=190); pdf.ln(80)
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(0, 10, f"Flight Report: {f_data['flight_no']} - {f_data['date']}", 0, 1, 'C')
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(0, 10, "Station Operations Report", 0, 1, 'C')
+            pdf.ln(5)
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(63, 10, f"Flight: {f_data.get('flight_no')}", 1, 0, 'C')
+            pdf.cell(63, 10, f"Reg: {f_data.get('reg')}", 1, 0, 'C')
+            pdf.cell(64, 10, f"Date: {f_data.get('date')}", 1, 1, 'C')
             pdf.ln(10)
-            for s_key, val in sorted(f_data.get('times', {}).items()):
+            for s_key in sorted(f_data.get('times', {}).keys()):
+                val = f_data['times'][s_key]
                 pdf.cell(80, 10, s_key.replace("_", " "), 1)
                 pdf.cell(40, 10, val['time'], 1, 0, 'C')
                 pdf.cell(70, 10, val['staff'], 1, 1, 'C')
@@ -166,7 +169,7 @@ if 'active_id' in st.session_state and st.session_state.active_id in get_active_
         c1, c2 = st.columns(2)
         if c1.button("📧 إرسال الإيميل", use_container_width=True):
             try:
-                pdf = generate_pdf(data)
+                pdf = generate_pdf_final(data)
                 pdf_name = f"Report_{data['flight_no']}.pdf"
                 pdf.output(pdf_name)
                 msg = MIMEMultipart()
@@ -182,10 +185,10 @@ if 'active_id' in st.session_state and st.session_state.active_id in get_active_
                 server.send_message(msg); server.quit()
                 os.remove(pdf_name)
                 st.success("✅ تم الإرسال.")
-            except Exception as e: st.error(f"❌ خطأ: {e}")
+            except Exception as e: st.error(f"❌ فشل الإرسال: {e}")
 
         if c2.button("📂 أرشفة وإنهاء", type="primary", use_container_width=True):
-            pdf = generate_pdf(data)
+            pdf = generate_pdf_final(data)
             pdf.output(os.path.join(ARCHIVE_DIR, f"Report_{st.session_state.active_id}.pdf"))
             os.remove(os.path.join(DATA_DIR, f"{st.session_state.active_id}.json"))
             st.success("✅ تمت الأرشفة.")
