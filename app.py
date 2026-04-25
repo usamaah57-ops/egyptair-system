@@ -98,12 +98,8 @@ init_db()
 # --- Page Settings ---
 st.set_page_config(page_title="Baghdad Station Operations", page_icon="✈️", layout="centered")
 
-# --- Header Image (from URL instead of file) ---
-st.image(
-    "https://i.imgur.com/2JYQFZC.jpeg",
-    caption="EgyptAir – Baghdad Station Operations",
-    use_column_width=True
-)
+# --- Header Image (your uploaded image) ---
+st.image("egyptair_plane.jpg.webp", use_column_width=True)
 
 st.title("✈️ Baghdad Station Operations")
 
