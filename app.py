@@ -1,15 +1,17 @@
 import streamlit as st
 import sqlite3
 from datetime import datetime
+from fpdf import FPDF
+from io import BytesIO
 
 DB_FILE = "flight_data.db"
 
-# --- Initialize Database ---
+# -------------------- DATABASE --------------------
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    # Current services table
     c.execute("""
         CREATE TABLE IF NOT EXISTS services (
             key TEXT PRIMARY KEY,
@@ -18,7 +20,6 @@ def init_db():
         )
     """)
 
-    # Archive table
     c.execute("""
         CREATE TABLE IF NOT EXISTS archive (
             flight TEXT,
@@ -59,20 +60,18 @@ def clear_services():
     conn.close()
 
 
-# --- Archive with duplicate prevention ---
 def archive_services(flight, reg):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     date = datetime.now().strftime("%d/%m/%Y")
 
-    # Check if flight already archived with same number, reg, and date
     c.execute("SELECT COUNT(*) FROM archive WHERE flight=? AND reg=? AND date=?", (flight, reg, date))
     exists = c.fetchone()[0]
 
     if exists > 0:
         st.warning(f"⚠️ Flight {flight} ({reg}) already archived for {date}.")
         conn.close()
-        return
+        return False
 
     services = load_services()
     for k, v in services.items():
@@ -81,6 +80,7 @@ def archive_services(flight, reg):
 
     conn.commit()
     conn.close()
+    return True
 
 
 def load_archive():
@@ -92,18 +92,73 @@ def load_archive():
     return rows
 
 
-# --- Initialize DB ---
+# -------------------- PDF GENERATOR --------------------
+
+def generate_pdf(flight, reg, date, records):
+    pdf = FPDF()
+    pdf.add_page()
+
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "Baghdad Station Operations Report", ln=True, align="C")
+
+    pdf.set_font("Arial", "", 12)
+    pdf.ln(5)
+    pdf.cell(0, 8, f"Flight: {flight}", ln=True)
+    pdf.cell(0, 8, f"Registration: {reg}", ln=True)
+    pdf.cell(0, 8, f"Date: {date}", ln=True)
+
+    pdf.ln(5)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(60, 8, "Service", border=1)
+    pdf.cell(40, 8, "Time", border=1)
+    pdf.cell(80, 8, "Staff", border=1, ln=True)
+
+    pdf.set_font("Arial", "", 11)
+    for r in records:
+        pdf.cell(60, 8, r[3], border=1)
+        pdf.cell(40, 8, r[4], border=1)
+        pdf.cell(80, 8, r[5], border=1, ln=True)
+
+    buffer = BytesIO()
+    pdf.output(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+# -------------------- INIT --------------------
+
 init_db()
 
-# --- Page Settings ---
 st.set_page_config(page_title="Baghdad Station Operations", page_icon="✈️", layout="centered")
 
-# --- Header Image (your uploaded image) ---
-st.image("egyptair_plane.jpg.webp", use_column_width=True)
+# -------------------- BACKGROUND --------------------
+
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-image: url("bg.jpg");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-attachment: fixed;
+    }
+
+    .main, .block-container {
+        background: rgba(255, 255, 255, 0.82);
+        padding: 20px;
+        border-radius: 12px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# -------------------- UI --------------------
 
 st.title("✈️ Baghdad Station Operations")
 
-# --- Staff Login ---
+# Staff login
 if 'staff_confirmed' not in st.session_state:
     st.session_state.staff_confirmed = False
 
@@ -123,13 +178,20 @@ if not st.session_state.staff_confirmed:
 
 st.write(f"👷 Current Staff: **{st.session_state.current_staff}**")
 
-# --- Flight Inputs ---
+# Flight info
 flight = st.text_input("Flight Number", value="MS616").upper()
 reg = st.text_input("Registration (Reg)", value="SU-").upper()
 
 st.divider()
 
-# --- Services ---
+# -------------------- ADD NEW FLIGHT --------------------
+
+if st.button("➕ Add New Flight", use_container_width=True):
+    clear_services()
+    st.rerun()
+
+# -------------------- SERVICES --------------------
+
 services_labels = [
     ("⏱ Chocks ON", "CHOCKS_ON"), ("⚡ GPU Arrival", "GPU_ARRIVAL"),
     ("🔌 APU Start", "APU_START"), ("🛠 Air Starter", "AIR_STARTER"),
@@ -157,25 +219,50 @@ for i, (label, key) in enumerate(services_labels):
 
 st.divider()
 
-# --- Final Report Button ---
+# -------------------- FINAL REPORT --------------------
+
 if st.button("📧 Send Final Report and Archive Data", type="primary", use_container_width=True):
     if not current_shared_times:
         st.warning("⚠️ No data available!")
     else:
-        archive_services(flight, reg)
-        clear_services()
-        st.success("✅ Report archived successfully.")
-        st.balloons()
-        st.rerun()
+        ok = archive_services(flight, reg)
+        if ok:
+            clear_services()
+            st.success("✅ Report archived successfully.")
+            st.balloons()
+            st.rerun()
 
-# --- Archive Viewer ---
+# -------------------- ARCHIVE --------------------
+
 st.divider()
 st.subheader("📂 Archived Reports")
 
 archive = load_archive()
 
 if archive:
-    for row in archive[:20]:
-        st.write(f"Flight {row[0]} | Reg {row[1]} | Date {row[2]} | {row[3]} at {row[4]} by {row[5]}")
+    grouped = {}
+    for row in archive:
+        key = (row[0], row[1], row[2])
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append(row)
+
+    for (flight, reg, date), records in grouped.items():
+        st.write(f"✈️ Flight {flight} | Reg {reg} | Date {date}")
+
+        pdf_buffer = generate_pdf(flight, reg, date, records)
+
+        st.download_button(
+            label="📄 Download PDF",
+            data=pdf_buffer,
+            file_name=f"{flight}_{reg}_{date}.pdf",
+            mime="application/pdf"
+        )
+
+        for r in records:
+            st.write(f"- {r[3]} at {r[4]} by {r[5]}")
+
+        st.markdown("---")
+
 else:
     st.info("No archived reports yet.")
