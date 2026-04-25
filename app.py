@@ -6,12 +6,12 @@ from io import BytesIO
 
 DB_FILE = "flight_data.db"
 
-# -------------------- DATABASE --------------------
-
+# --- Initialize Database ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
+    # Current services table
     c.execute("""
         CREATE TABLE IF NOT EXISTS services (
             key TEXT PRIMARY KEY,
@@ -20,6 +20,7 @@ def init_db():
         )
     """)
 
+    # Archive table
     c.execute("""
         CREATE TABLE IF NOT EXISTS archive (
             flight TEXT,
@@ -60,11 +61,13 @@ def clear_services():
     conn.close()
 
 
+# --- Archive with duplicate prevention ---
 def archive_services(flight, reg):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     date = datetime.now().strftime("%d/%m/%Y")
 
+    # Check if flight already archived with same number, reg, and date
     c.execute("SELECT COUNT(*) FROM archive WHERE flight=? AND reg=? AND date=?", (flight, reg, date))
     exists = c.fetchone()[0]
 
@@ -92,8 +95,7 @@ def load_archive():
     return rows
 
 
-# -------------------- PDF GENERATOR --------------------
-
+# --- PDF Generator ---
 def generate_pdf(flight, reg, date, records):
     pdf = FPDF()
     pdf.add_page()
@@ -125,40 +127,18 @@ def generate_pdf(flight, reg, date, records):
     return buffer
 
 
-# -------------------- INIT --------------------
-
+# --- Initialize DB ---
 init_db()
 
+# --- Page Settings ---
 st.set_page_config(page_title="Baghdad Station Operations", page_icon="✈️", layout="centered")
 
-# -------------------- BACKGROUND --------------------
-
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-image: url("bg.jpg");
-        background-size: cover;
-        background-position: center;
-        background-repeat: no-repeat;
-        background-attachment: fixed;
-    }
-
-    .main, .block-container {
-        background: rgba(255, 255, 255, 0.82);
-        padding: 20px;
-        border-radius: 12px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# -------------------- UI --------------------
+# --- Header Image ---
+st.image("egyptair_plane.jpg.webp", use_column_width=True)
 
 st.title("✈️ Baghdad Station Operations")
 
-# Staff login
+# --- Staff Login ---
 if 'staff_confirmed' not in st.session_state:
     st.session_state.staff_confirmed = False
 
@@ -178,20 +158,18 @@ if not st.session_state.staff_confirmed:
 
 st.write(f"👷 Current Staff: **{st.session_state.current_staff}**")
 
-# Flight info
+# --- Flight Inputs ---
 flight = st.text_input("Flight Number", value="MS616").upper()
 reg = st.text_input("Registration (Reg)", value="SU-").upper()
 
 st.divider()
 
-# -------------------- ADD NEW FLIGHT --------------------
-
+# --- Add New Flight Button ---
 if st.button("➕ Add New Flight", use_container_width=True):
     clear_services()
     st.rerun()
 
-# -------------------- SERVICES --------------------
-
+# --- Services ---
 services_labels = [
     ("⏱ Chocks ON", "CHOCKS_ON"), ("⚡ GPU Arrival", "GPU_ARRIVAL"),
     ("🔌 APU Start", "APU_START"), ("🛠 Air Starter", "AIR_STARTER"),
@@ -219,8 +197,7 @@ for i, (label, key) in enumerate(services_labels):
 
 st.divider()
 
-# -------------------- FINAL REPORT --------------------
-
+# --- Final Report Button ---
 if st.button("📧 Send Final Report and Archive Data", type="primary", use_container_width=True):
     if not current_shared_times:
         st.warning("⚠️ No data available!")
@@ -232,14 +209,15 @@ if st.button("📧 Send Final Report and Archive Data", type="primary", use_cont
             st.balloons()
             st.rerun()
 
-# -------------------- ARCHIVE --------------------
-
+# --- Archive Viewer ---
 st.divider()
 st.subheader("📂 Archived Reports")
 
 archive = load_archive()
 
 if archive:
+
+    # Group by flight/reg/date
     grouped = {}
     for row in archive:
         key = (row[0], row[1], row[2])
@@ -248,8 +226,10 @@ if archive:
         grouped[key].append(row)
 
     for (flight, reg, date), records in grouped.items():
+
         st.write(f"✈️ Flight {flight} | Reg {reg} | Date {date}")
 
+        # PDF button
         pdf_buffer = generate_pdf(flight, reg, date, records)
 
         st.download_button(
@@ -259,6 +239,7 @@ if archive:
             mime="application/pdf"
         )
 
+        # Show records
         for r in records:
             st.write(f"- {r[3]} at {r[4]} by {r[5]}")
 
