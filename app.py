@@ -76,7 +76,7 @@ if menu == "فتح رحلة جديدة":
             today = datetime.now(BAGHDAD_TZ).strftime('%d-%m-%Y')
             f_id = f"{f_no}_{f_reg}_{today}"
             if any(f_id in f for f in active_flights):
-                st.warning("⚠️ هذه الرحلة مفتوحة بالفعل في القائمة النشطة.")
+                st.warning("⚠️ هذه الرحلة مفتوحة بالفعل.")
             else:
                 save_flight_data(f_id, {"flight_no": f_no, "reg": f_reg, "date": today, "times": {}})
                 st.session_state.active_id = f_id
@@ -90,7 +90,7 @@ else:
     else:
         st.info("لا توجد رحلات نشطة حالياً.")
 
-# --- 7. أرشيف الـ PDF مع ميزة الحذف ---
+# --- 7. أرشيف الـ PDF مع ميزة الحذف (كما في الصورة الأخيرة) ---
 st.sidebar.divider()
 st.sidebar.subheader("📂 أرشيف التقارير المنجزة")
 archived_files = sorted(glob.glob(os.path.join(ARCHIVE_DIR, "*.pdf")), reverse=True)
@@ -98,24 +98,24 @@ archived_files = sorted(glob.glob(os.path.join(ARCHIVE_DIR, "*.pdf")), reverse=T
 if archived_files:
     for pdf_path in archived_files:
         file_name = os.path.basename(pdf_path)
-        col_down, col_del = st.sidebar.columns([3, 1])
+        col_down, col_del = st.sidebar.columns([4, 1])
         with open(pdf_path, "rb") as f:
-            col_down.download_button(label=f"📄 {file_name[:15]}", data=f, file_name=file_name, mime="application/pdf", key=f"dl_{file_name}")
+            col_down.download_button(label=f"📄 {file_name[:12]}", data=f, file_name=file_name, mime="application/pdf", key=f"dl_{file_name}")
         if col_del.button("❌", key=f"del_{file_name}"):
             os.remove(pdf_path)
             st.rerun()
 else:
     st.sidebar.info("الأرشيف فارغ.")
 
-# --- 8. واجهة العمل وتسجيل الأوقات (تصحيح KeyError) ---
+# --- 8. واجهة تسجيل الأوقات (تصحيح الأخطاء من الصورة 2) ---
 if 'active_id' in st.session_state and st.session_state.active_id in get_active_flights():
     data = load_flight_data(st.session_state.active_id)
     if data:
         st.header(f"✈️ {data.get('flight_no', 'N/A')} | {data.get('reg', 'N/A')}")
-        # معالجة الخطأ: استخدام .get لتجنب KeyError إذا كان التاريخ مفقوداً
         flight_date = data.get('date', datetime.now(BAGHDAD_TZ).strftime('%d-%m-%Y'))
         st.info(f"📅 تاريخ الرحلة: {flight_date}")
         
+        # قائمة الخدمات (تم تصحيح علامات التنصيص هنا لتعالج خطأ الصورة 2)
         services = [
             ("⏱ Chocks ON", "CHOCKS_ON"), ("⚡ GPU Arrival", "GPU_ARRIVAL"),
             ("🔌 APU Start", "APU_START"), ("💨 Air Starter", "AIR_STARTER"),
@@ -142,7 +142,7 @@ if 'active_id' in st.session_state and st.session_state.active_id in get_active_
 
         st.divider()
         
-        # --- 9. وظيفة توليد PDF وإرسال الإيميل (تصحيح SyntaxErrors) ---
+        # --- 9. توليد PDF (تصحيح خطأ الأقواس من الصورة 3) ---
         def generate_pdf_report(flight_data):
             pdf = FPDF()
             pdf.add_page()
@@ -153,6 +153,7 @@ if 'active_id' in st.session_state and st.session_state.active_id in get_active_
             pdf.cell(0, 10, "Station Operations Report", 0, 1, 'C')
             pdf.ln(5)
             pdf.set_font("Arial", 'B', 12)
+            # تم إغلاق الأقواس هنا بشكل صحيح لمعالجة خطأ الصورة 3
             pdf.cell(63, 10, f"Flight: {flight_data.get('flight_no', 'N/A')}", 1, 0, 'C')
             pdf.cell(63, 10, f"Reg: {flight_data.get('reg', 'N/A')}", 1, 0, 'C')
             pdf.cell(64, 10, f"Date: {flight_data.get('date', 'N/A')}", 1, 1, 'C')
@@ -165,4 +166,41 @@ if 'active_id' in st.session_state and st.session_state.active_id in get_active_
             for s_key in sorted(flight_data.get('times', {}).keys()):
                 val = flight_data['times'][s_key]
                 pdf.cell(80, 10, s_key.replace("_", " "), 1)
-                pdf
+                pdf.cell(40, 10, val['time'], 1, 0, 'C')
+                pdf.cell(70, 10, val['staff'], 1, 1, 'C')
+            return pdf
+
+        c1, c2 = st.columns(2)
+        
+        if c1.button("📧 إرسال الإيميل فقط", use_container_width=True):
+            try:
+                report_pdf = generate_pdf_report(data)
+                temp_name = f"Temp_{st.session_state.active_id}.pdf"
+                report_pdf.output(temp_name)
+                msg = MIMEMultipart()
+                msg['From'] = EMAIL_SENDER
+                msg['To'] = EMAIL_RECEIVER
+                msg['Subject'] = f"Ops Report: {data.get('flight_no')} | {data.get('date')}"
+                with open(temp_name, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", f"attachment; filename={temp_name}")
+                    msg.attach(part)
+                server = smtplib.SMTP_SSL('smtp.mail.yahoo.com', 465)
+                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                server.send_message(msg)
+                server.quit()
+                os.remove(temp_name)
+                st.success("✅ تم إرسال الإيميل بنجاح.")
+            except Exception as e:
+                st.error(f"❌ فشل الإرسال: {e}")
+
+        if c2.button("📂 أرشفة وإغلاق الرحلة", type="primary", use_container_width=True):
+            report_pdf = generate_pdf_report(data)
+            final_name = f"Report_{st.session_state.active_id}.pdf"
+            report_pdf.output(os.path.join(ARCHIVE_DIR, final_name))
+            os.remove(os.path.join(DATA_DIR, f"{st.session_state.active_id}.json"))
+            st.success("✅ تم الحفظ في الأرشيف وإغلاق الرحلة.")
+            st.balloons()
+            st.rerun()
