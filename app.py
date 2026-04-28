@@ -5,6 +5,7 @@ import pytz
 from fpdf import FPDF
 from io import BytesIO
 
+# --- الإعدادات الثابتة ---
 DB_FILE = "flight_data.db"
 BAGHDAD_TZ = pytz.timezone('Asia/Baghdad')
 
@@ -52,7 +53,6 @@ def archive_services(flight, reg):
     date = datetime.now(BAGHDAD_TZ).strftime("%d/%m/%Y")
     services = load_services()
     if not services: return False
-    
     for k, v in services.items():
         c.execute("INSERT INTO archive (flight, reg, date, key, time, staff) VALUES (?, ?, ?, ?, ?, ?)",
                   (flight, reg, date, k, v['time'], v['staff']))
@@ -68,15 +68,38 @@ def load_archive():
     conn.close()
     return rows
 
-# --- إعداد الصفحة ---
+# --- وظيفة إنشاء الـ PDF ---
+def generate_pdf(flight, reg, date, records):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "Baghdad Station Operations Report", ln=True, align="C")
+    pdf.set_font("Arial", "", 12)
+    pdf.ln(5)
+    pdf.cell(0, 8, f"Flight: {flight} | Reg: {reg} | Date: {date}", ln=True)
+    pdf.ln(5)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(60, 8, "Service", border=1)
+    pdf.cell(40, 8, "Time", border=1)
+    pdf.cell(80, 8, "Staff", border=1, ln=True)
+    pdf.set_font("Arial", "", 11)
+    for r in records:
+        # r[3] هو اسم الخدمة، r[4] الوقت، r[5] الموظف
+        pdf.cell(60, 8, str(r[3]), border=1)
+        pdf.cell(40, 8, str(r[4]), border=1)
+        pdf.cell(80, 8, str(r[5]), border=1, ln=True)
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- واجهة Streamlit ---
 init_db()
-st.set_page_config(page_title="عمليات محطة بغداد", layout="wide")
+st.set_page_config(page_title="عمليات محطة بغداد", page_icon="✈️", layout="wide")
 
 if 'staff_confirmed' not in st.session_state:
     st.session_state.staff_confirmed = False
 
 if not st.session_state.staff_confirmed:
-    name_input = st.text_input("الرجاء إدخال اسم الموظف:")
+    st.title("🔐 تسجيل الدخول")
+    name_input = st.text_input("الرجاء إدخال اسم الموظف المسؤول:")
     if st.button("دخول"):
         if name_input.strip():
             st.session_state.current_staff = name_input.strip()
@@ -86,19 +109,18 @@ if not st.session_state.staff_confirmed:
 
 # --- القائمة الجانبية ---
 with st.sidebar:
-    st.title("⚙️ الإعدادات")
-    app_mode = st.radio("التنقل:", ["تسجيل الرحلة", "الرحلات المنفذة"])
+    st.title("📊 التحكم")
+    app_mode = st.radio("انتقل إلى:", ["تسجيل الرحلة الحالية", "سجل الرحلات المنفذة"])
     st.divider()
     manual_mode = st.toggle("تفعيل التعديل اليدوي ✍️")
-    st.info(f"الموظف: {st.session_state.current_staff}")
+    st.write(f"الموظف: {st.session_state.current_staff}")
 
-# --- واجهة تسجيل الرحلة ---
-if app_mode == "تسجيل الرحلة":
-    st.title("✈️ تسجيل بيانات الرحلة")
-    
-    col_f, col_r = st.columns(2)
-    flight = col_f.text_input("رقم الرحلة", value="MS616")
-    reg = col_r.text_input("التسجيل", value="SU-")
+# --- الصفحة الأولى: التسجيل ---
+if app_mode == "تسجيل الرحلة الحالية":
+    st.title("✈️ لوحة تسجيل العمليات")
+    col1, col2 = st.columns(2)
+    flight = col1.text_input("رقم الرحلة", value="MS616")
+    reg = col2.text_input("التسجيل (Reg)", value="SU-")
 
     st.divider()
 
@@ -120,47 +142,31 @@ if app_mode == "تسجيل الرحلة":
     for i, (label, key) in enumerate(services_labels):
         with cols[i % 2]:
             if key in current_data:
-                # في حال كانت الخدمة مسجلة
-                recorded = current_data[key]
-                st.success(f"✅ {label}: {recorded['time']}")
-                
-                # إذا كان وضع التعديل مفعلاً، تظهر أزرار الحذف أو التعديل
+                rec = current_data[key]
+                st.success(f"✅ {label}: {rec['time']}")
                 if manual_mode:
-                    new_time = st.text_input(f"تعديل وقت {label}", value=recorded['time'], key=f"edit_{key}")
-                    col_edit, col_del = st.columns(2)
-                    if col_edit.button("حفظ التعديل", key=f"save_{key}"):
-                        save_service(key, new_time, st.session_state.current_staff)
+                    new_t = st.text_input(f"تعديل {label}", value=rec['time'], key=f"ed_{key}")
+                    c1, c2 = st.columns(2)
+                    if c1.button("حفظ", key=f"sv_{key}"):
+                        save_service(key, new_t, st.session_state.current_staff)
                         st.rerun()
-                    if col_del.button("حذف", key=f"del_{key}"):
+                    if c2.button("حذف", key=f"dl_{key}"):
                         delete_service(key)
                         st.rerun()
             else:
-                # في حال لم تكن مسجلة
                 if manual_mode:
-                    # إدخال يدوي بالكامل
-                    manual_t = st.text_input(f"إدخال وقت {label} (HH:MM)", key=f"man_{key}")
-                    if st.button(f"تسجيل {label} يدوياً", key=f"btn_man_{key}"):
-                        if manual_t:
-                            save_service(key, manual_t, st.session_state.current_staff)
+                    m_t = st.text_input(f"وقت {label}", placeholder="HH:MM", key=f"in_{key}")
+                    if st.button(f"تسجيل {label}", key=f"btn_{key}"):
+                        if m_t:
+                            save_service(key, m_t, st.session_state.current_staff)
                             st.rerun()
                 else:
-                    # تسجيل تلقائي بضغطة زر
                     if st.button(label, key=key, use_container_width=True):
                         now_t = datetime.now(BAGHDAD_TZ).strftime("%H:%M")
                         save_service(key, now_t, st.session_state.current_staff)
                         st.rerun()
 
     st.divider()
-    if st.button("✅ أرشفة وإنهاء الرحلة", type="primary", use_container_width=True):
+    if st.button("🏁 أرشفة وإنهاء الرحلة وإصدار التقرير", type="primary", use_container_width=True):
         if archive_services(flight, reg):
-            clear_services()
-            st.success("تمت الأرشفة بنجاح")
-            st.rerun()
-
-# --- واجهة الرحلات المنفذة (نفس الكود السابق مع عرض منظم) ---
-elif app_mode == "الرحلات المنفذة":
-    st.title("📂 سجل الرحلات")
-    archive = load_archive()
-    # ... (يمكنك وضع نفس كود العرض السابق هنا)
-    for row in archive:
-        st.write(f"{row[0]} | {row[1]} | {row[2]} | {row[3]}: {row[4]}")
+            clear_services
